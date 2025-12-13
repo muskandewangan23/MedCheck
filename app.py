@@ -82,6 +82,45 @@ def verify_medical_claim(claim, evidence):
     }
 
 # =============================
+# Personalization Agent (v2)
+# =============================
+def personalize_risk(user_profile, evidence):
+    warnings = []
+    evidence_text = " ".join([e["text"].lower() for e in evidence])
+
+    for condition in user_profile.get("known_conditions", []):
+        c = condition.lower()
+
+        if "kidney" in c and "kidney" in evidence_text:
+            warnings.append(
+                "You have a kidney-related condition, and the evidence mentions kidney damage risk."
+            )
+
+        if "liver" in c and ("liver" in evidence_text or "hepatic" in evidence_text):
+            warnings.append(
+                "You have a liver-related condition, and the evidence mentions liver toxicity risk."
+            )
+
+        if "heart" in c and "cardiovascular" in evidence_text:
+            warnings.append(
+                "You have a heart-related condition, and the evidence mentions cardiovascular risk."
+            )
+
+    for allergy in user_profile.get("allergies", []):
+        if allergy.lower() in evidence_text:
+            warnings.append(
+                f"You are allergic to {allergy}, which appears in the medical evidence."
+            )
+
+    if user_profile.get("pregnancy_status", False):
+        if any(word in evidence_text for word in ["pregnancy", "pregnant", "fetal"]):
+            warnings.append(
+                "You are pregnant, and the evidence includes pregnancy-related risks."
+            )
+
+    return warnings
+
+# =============================
 # Confidence Scoring
 # =============================
 def compute_confidence(verdict, evidence_count):
@@ -98,7 +137,40 @@ def compute_confidence(verdict, evidence_count):
     return round(min(confidence, 0.95), 2)
 
 # =============================
-# UI Interaction
+# Optional User Profile (v2 UI)
+# =============================
+st.markdown("## 👤 Optional: Personal Health Profile")
+
+with st.expander("Add personal medical details (optional)"):
+    age = st.number_input("Age", min_value=0, max_value=120, value=0)
+    gender = st.selectbox("Gender", ["Prefer not to say", "Male", "Female", "Other"])
+
+    conditions = st.text_input(
+        "Known medical conditions (comma-separated)",
+        placeholder="e.g. kidney disease, diabetes"
+    )
+
+    allergies = st.text_input(
+        "Allergies (comma-separated)",
+        placeholder="e.g. penicillin"
+    )
+
+    pregnancy_status = st.checkbox("Pregnant (if applicable)")
+
+# Build user profile from UI
+user_profile = None
+if age > 0 or conditions.strip() or allergies.strip() or pregnancy_status:
+    user_profile = {
+        "age": age if age > 0 else None,
+        "gender": gender.lower() if gender != "Prefer not to say" else None,
+        "known_conditions": [c.strip().lower() for c in conditions.split(",") if c.strip()],
+        "allergies": [a.strip().lower() for a in allergies.split(",") if a.strip()],
+        "current_medications": [],
+        "pregnancy_status": pregnancy_status
+    }
+
+# =============================
+# Claim Input
 # =============================
 claim = st.text_area(
     "Enter a medical claim or advice",
@@ -126,6 +198,13 @@ if st.button("Verify Claim"):
 
         st.markdown(f"## 📊 Confidence Score: `{confidence}`")
 
+        if user_profile:
+            warnings = personalize_risk(user_profile, evidence)
+            if warnings:
+                st.markdown("## ⚠️ Personalized Safety Warnings")
+                for w in warnings:
+                    st.warning(w)
+
         st.markdown("## 📚 Supporting Medical Evidence")
         for item in evidence:
             st.markdown(f"- {item['text']}")
@@ -135,5 +214,6 @@ if st.button("Verify Claim"):
 # =============================
 st.markdown("---")
 st.caption(
-    "MedCheck v1 • Agentic RAG-based Medical Verification System"
+    "⚠️ MedCheck v2 provides informational guidance only and does not replace professional medical advice. "
+    "Always consult a qualified healthcare provider."
 )
