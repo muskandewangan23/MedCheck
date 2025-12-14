@@ -17,6 +17,9 @@ def init_firebase():
 
 db = init_firebase()
 
+
+db.collection("test").document("ping").set({"status": "ok"})
+
 # =============================
 # App Configuration
 # =============================
@@ -231,6 +234,7 @@ st.caption(
     "⚠️ MedCheck v2 provides informational guidance only and does not replace professional medical advice. "
     "Always consult a qualified healthcare provider."
 )
+
 
 
 
