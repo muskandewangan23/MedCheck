@@ -253,10 +253,17 @@ if st.button("Verify Claim"):
         st.markdown(f"## 📊 Confidence Score: `{confidence}`")
 
         warnings = personalize_risk(st.session_state.user_profile, evidence)
+
+        st.markdown("## ⚠️ Personalized Safety Assessment")
+        
         if warnings:
-            st.markdown("## ⚠️ Personalized Safety Warnings")
             for w in warnings:
                 st.warning(w)
+        else:
+            st.info(
+                "Based on your profile, no specific additional risks were identified "
+                "beyond the general medical evidence."
+            )
 
         st.markdown("## 📚 Supporting Medical Evidence")
         for e in evidence:
@@ -267,3 +274,4 @@ if st.button("Verify Claim"):
 # =============================
 st.markdown("---")
 st.caption("⚠️ MedCheck v3.1 • Informational use only. Consult a medical professional.")
+
