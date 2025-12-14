@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import re
 import numpy as np
 import pandas as pd
 import faiss
@@ -10,9 +9,9 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-# =============================
+# =========================================================
 # Firebase Initialization
-# =============================
+# =========================================================
 @st.cache_resource
 def init_firebase():
     if not firebase_admin._apps:
@@ -24,9 +23,9 @@ def init_firebase():
 db = init_firebase()
 FIREBASE_API_KEY = st.secrets["FIREBASE_WEB_API_KEY"]
 
-# =============================
+# =========================================================
 # Firebase Auth (REST)
-# =============================
+# =========================================================
 def firebase_register(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
     return requests.post(url, json={
@@ -43,9 +42,9 @@ def firebase_login(email, password):
         "returnSecureToken": True
     }).json()
 
-# =============================
-# App Config
-# =============================
+# =========================================================
+# App Configuration
+# =========================================================
 st.set_page_config(page_title="MedCheck", layout="centered")
 
 st.title("🩺 MedCheck")
@@ -59,9 +58,9 @@ MedCheck verifies medical advice or health-related claims using
 for professional medical advice**.
 """)
 
-# =============================
+# =========================================================
 # Session State
-# =============================
+# =========================================================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_profile" not in st.session_state:
@@ -69,9 +68,9 @@ if "user_profile" not in st.session_state:
 if "user_uid" not in st.session_state:
     st.session_state.user_uid = None
 
-# =============================
+# =========================================================
 # AUTH UI
-# =============================
+# =========================================================
 st.markdown("## 🔐 Account")
 auth_mode = st.radio("Choose action", ["Login", "Register"], horizontal=True)
 
@@ -124,19 +123,34 @@ if not st.session_state.logged_in:
     st.info("Please login or register to use MedCheck.")
     st.stop()
 
-# =============================
+# =========================================================
 # EDIT PROFILE
-# =============================
+# =========================================================
 st.sidebar.markdown("## 👤 Profile Settings")
 profile = st.session_state.user_profile
 
 with st.sidebar.form("edit_profile"):
     age = st.number_input("Age", 0, 120, value=profile.get("age", 0))
-    gender = st.selectbox("Gender", ["Prefer not to say", "Male", "Female", "Other"],
-                          index=["Prefer not to say", "Male", "Female", "Other"].index(profile.get("gender", "Prefer not to say")))
-    conditions = st.text_input("Known medical conditions", ", ".join(profile.get("known_conditions", [])))
-    allergies = st.text_input("Allergies", ", ".join(profile.get("allergies", [])))
-    pregnancy = st.checkbox("Pregnant", value=profile.get("pregnancy_status", False))
+    gender = st.selectbox(
+        "Gender",
+        ["Prefer not to say", "Male", "Female", "Other"],
+        index=["Prefer not to say", "Male", "Female", "Other"].index(
+            profile.get("gender", "Prefer not to say")
+        )
+    )
+    conditions = st.text_input(
+        "Known medical conditions",
+        ", ".join(profile.get("known_conditions", []))
+    )
+    allergies = st.text_input(
+        "Allergies",
+        ", ".join(profile.get("allergies", []))
+    )
+    pregnancy = st.checkbox(
+        "Pregnant (if applicable)",
+        value=profile.get("pregnancy_status", False)
+    )
+
     save = st.form_submit_button("💾 Save Profile")
 
 if save:
@@ -150,11 +164,11 @@ if save:
     }
     db.collection("users").document(st.session_state.user_uid).set(updated)
     st.session_state.user_profile = updated
-    st.sidebar.success("Profile updated!")
+    st.sidebar.success("Profile updated successfully!")
 
-# =============================
+# =========================================================
 # Load FAISS + Embeddings
-# =============================
+# =========================================================
 BASE_DIR = "."
 FAISS_PATH = os.path.join(BASE_DIR, "embeddings/faiss_index/medcheck.index")
 META_PATH = os.path.join(BASE_DIR, "embeddings/chunk_metadata.csv")
@@ -168,14 +182,26 @@ def load_resources():
 
 index, metadata, embedder = load_resources()
 
-def retrieve_medical_evidence(query, top_k=2):
+def retrieve_medical_evidence(query, top_k=5):
     emb = embedder.encode([query])
-    d, i = index.search(emb, top_k)
-    return [{"text": metadata.iloc[idx]["text"]} for idx in i[0]]
+    _, indices = index.search(emb, top_k)
+    return [{"text": metadata.iloc[idx]["text"]} for idx in indices[0]]
 
-# =============================
+# =========================================================
+# Entity-aware filtering (Level-1)
+# =========================================================
+def filter_evidence_by_query_entities(query, evidence):
+    query_terms = set(query.lower().split())
+    filtered = []
+    for e in evidence:
+        text = e["text"].lower()
+        if any(term in text for term in query_terms):
+            filtered.append(e)
+    return filtered if filtered else evidence
+
+# =========================================================
 # Load LLM (FLAN-T5)
-# =============================
+# =========================================================
 @st.cache_resource
 def load_llm():
     tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
@@ -184,9 +210,9 @@ def load_llm():
 
 llm_tokenizer, llm_model = load_llm()
 
-# =============================
-# Reasoning Helpers
-# =============================
+# =========================================================
+# LLM Reasoning
+# =========================================================
 def classify_duration(claim):
     c = claim.lower()
     if any(x in c for x in ["2 days", "3 days", "few days", "short term", "once"]):
@@ -195,9 +221,9 @@ def classify_duration(claim):
         return "long"
     return "unknown"
 
-def build_analysis_prompt(claim, evidence):
+def analyze_claim_with_llm(claim, evidence):
     ev = "\n".join([e["text"] for e in evidence])
-    return f"""
+    prompt = f"""
 Answer strictly YES or NO.
 
 Claim:
@@ -211,18 +237,14 @@ ClearlyExcessiveUse:
 WarnsNormalUse:
 WarnsExcessiveUse:
 """
-
-def analyze_claim_with_llm(claim, evidence):
-    prompt = build_analysis_prompt(claim, evidence)
     inputs = llm_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
     out = llm_model.generate(**inputs, max_new_tokens=60)
     resp = llm_tokenizer.decode(out[0], skip_special_tokens=True).upper()
 
     return {
-        "normal_use": "NORMALUSE: YES" in resp,
-        "clearly_excessive": "CLEARLYEXCESSIVEUSE: YES" in resp,
         "warns_normal": "WARNSNORMALUSE: YES" in resp,
-        "warns_excessive": "WARNSEXCESSIVEUSE: YES" in resp
+        "warns_excessive": "WARNSEXCESSIVEUSE: YES" in resp,
+        "clearly_excessive": "CLEARLYEXCESSIVEUSE: YES" in resp
     }
 
 def decide_verdict_v4(analysis):
@@ -261,31 +283,72 @@ def verify_medical_claim_llm(claim, evidence):
 
     verdict = decide_verdict_v4(analysis)
     explanation = generate_explanation(claim, evidence, verdict)
-
     return verdict, explanation
 
-# =============================
+# =========================================================
 # UI – Claim Verification
-# =============================
+# =========================================================
 st.markdown("## 🧠 Verify Medical Claim")
 claim = st.text_area("Enter a medical claim or advice", height=120)
 
 if st.button("Verify Claim"):
-    evidence = retrieve_medical_evidence(claim)
+    raw_evidence = retrieve_medical_evidence(claim)
+    evidence = filter_evidence_by_query_entities(claim, raw_evidence)
+
     verdict, explanation = verify_medical_claim_llm(claim, evidence)
 
     st.markdown("## 🧾 Verdict")
-    st.error(verdict) if verdict == "Unsafe" else st.success(verdict)
+    if verdict == "Unsafe":
+        st.error(verdict)
+    elif verdict == "Safe":
+        st.success(verdict)
+    else:
+        st.warning(verdict)
 
     st.markdown("## 🔍 Explanation")
     st.write(explanation)
 
-    st.markdown("## 📚 Supporting Medical Evidence")
+    # =============================
+    # Personalized Safety Statement
+    # =============================
+    st.markdown("## ⚠️ Personalized Safety Assessment")
+    personalized_warnings = []
+    evidence_text = " ".join(e["text"].lower() for e in evidence)
+
+    for condition in st.session_state.user_profile.get("known_conditions", []):
+        if "kidney" in condition and "kidney" in evidence_text:
+            personalized_warnings.append(
+                "You have a kidney-related condition. The evidence mentions kidney risks, which may increase your personal risk."
+            )
+        if "liver" in condition and "liver" in evidence_text:
+            personalized_warnings.append(
+                "You have a liver-related condition. The evidence mentions liver toxicity, which may increase your personal risk."
+            )
+        if "heart" in condition and "cardiovascular" in evidence_text:
+            personalized_warnings.append(
+                "You have a heart-related condition. The evidence mentions cardiovascular risks."
+            )
+
+    if st.session_state.user_profile.get("pregnancy_status", False):
+        personalized_warnings.append(
+            "You are pregnant. Certain medications may pose additional risks during pregnancy."
+        )
+
+    if personalized_warnings:
+        for w in personalized_warnings:
+            st.warning(w)
+    else:
+        st.info(
+            "Based on your medical profile, no specific additional personal risk factors were identified "
+            "beyond the general medical evidence."
+        )
+
+    st.markdown("## 📚 Supporting Medical Evidence (Entity-Relevant)")
     for e in evidence:
         st.markdown(f"- {e['text']}")
 
-# =============================
+# =========================================================
 # Footer
-# =============================
+# =========================================================
 st.markdown("---")
-st.caption("⚠️ MedCheck v4.1 • Informational use only. Consult a medical professional.")
+st.caption("⚠️ MedCheck v4.3 • Informational use only. Consult a medical professional.")
