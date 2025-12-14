@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import re
 import numpy as np
 import pandas as pd
 import faiss
@@ -7,6 +8,7 @@ import requests
 from sentence_transformers import SentenceTransformer
 import firebase_admin
 from firebase_admin import credentials, firestore
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 # =============================
 # Firebase Initialization
@@ -27,16 +29,22 @@ FIREBASE_API_KEY = st.secrets["FIREBASE_WEB_API_KEY"]
 # =============================
 def firebase_register(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
-    payload = {"email": email, "password": password, "returnSecureToken": True}
-    return requests.post(url, json=payload).json()
+    return requests.post(url, json={
+        "email": email,
+        "password": password,
+        "returnSecureToken": True
+    }).json()
 
 def firebase_login(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
-    payload = {"email": email, "password": password, "returnSecureToken": True}
-    return requests.post(url, json=payload).json()
+    return requests.post(url, json={
+        "email": email,
+        "password": password,
+        "returnSecureToken": True
+    }).json()
 
 # =============================
-# App Configuration
+# App Config
 # =============================
 st.set_page_config(page_title="MedCheck", layout="centered")
 
@@ -45,7 +53,7 @@ st.subheader("Medical Claim Verification System")
 
 st.markdown("""
 MedCheck verifies medical advice or health-related claims using  
-**evidence-based retrieval and reasoning**.
+**evidence-based retrieval and AI reasoning**.
 
 ⚠️ This system provides **informational guidance only** and is **not a substitute
 for professional medical advice**.
@@ -65,7 +73,6 @@ if "user_uid" not in st.session_state:
 # AUTH UI
 # =============================
 st.markdown("## 🔐 Account")
-
 auth_mode = st.radio("Choose action", ["Login", "Register"], horizontal=True)
 
 email = st.text_input("Email")
@@ -73,7 +80,7 @@ password = st.text_input("Password", type="password")
 
 if auth_mode == "Register":
     st.markdown("### 👤 Medical Profile (Stored once)")
-    age = st.number_input("Age", min_value=0, max_value=120, step=1)
+    age = st.number_input("Age", 0, 120, step=1)
     gender = st.selectbox("Gender", ["Prefer not to say", "Male", "Female", "Other"])
     conditions = st.text_input("Known medical conditions (comma-separated)")
     allergies = st.text_input("Allergies (comma-separated)")
@@ -84,79 +91,56 @@ if st.button(auth_mode):
         st.error("Email and password are required.")
     else:
         if auth_mode == "Register":
-            auth_res = firebase_register(email, password)
-
-            if "localId" in auth_res:
-                uid = auth_res["localId"]
-                profile = {
+            res = firebase_register(email, password)
+            if "localId" in res:
+                uid = res["localId"]
+                db.collection("users").document(uid).set({
                     "email": email,
                     "age": age,
                     "gender": gender,
                     "known_conditions": [c.strip().lower() for c in conditions.split(",") if c.strip()],
                     "allergies": [a.strip().lower() for a in allergies.split(",") if a.strip()],
                     "pregnancy_status": pregnancy
-                }
-                db.collection("users").document(uid).set(profile)
+                })
                 st.success("Registration successful! Please login.")
             else:
-                st.error(auth_res.get("error", {}).get("message", "Registration failed"))
-
-        else:  # Login
-            auth_res = firebase_login(email, password)
-
-            if "localId" in auth_res:
-                uid = auth_res["localId"]
+                st.error(res.get("error", {}).get("message", "Registration failed"))
+        else:
+            res = firebase_login(email, password)
+            if "localId" in res:
+                uid = res["localId"]
                 doc = db.collection("users").document(uid).get()
-
                 if doc.exists:
                     st.session_state.logged_in = True
-                    st.session_state.user_profile = doc.to_dict()
                     st.session_state.user_uid = uid
+                    st.session_state.user_profile = doc.to_dict()
                     st.success("Logged in successfully!")
                 else:
                     st.error("User profile not found.")
             else:
-                st.error(auth_res.get("error", {}).get("message", "Login failed"))
+                st.error(res.get("error", {}).get("message", "Login failed"))
 
-# =============================
-# STOP if not logged in
-# =============================
 if not st.session_state.logged_in:
     st.info("Please login or register to use MedCheck.")
     st.stop()
 
 # =============================
-# EDIT PROFILE (v3.1)
+# EDIT PROFILE
 # =============================
 st.sidebar.markdown("## 👤 Profile Settings")
 profile = st.session_state.user_profile
 
-with st.sidebar.form("edit_profile_form"):
-    age = st.number_input("Age", 0, 120, value=profile.get("age") or 0)
-    gender = st.selectbox(
-        "Gender",
-        ["Prefer not to say", "Male", "Female", "Other"],
-        index=["Prefer not to say", "Male", "Female", "Other"].index(
-            profile.get("gender", "Prefer not to say")
-        )
-    )
-    conditions = st.text_input(
-        "Known medical conditions (comma-separated)",
-        value=", ".join(profile.get("known_conditions", []))
-    )
-    allergies = st.text_input(
-        "Allergies (comma-separated)",
-        value=", ".join(profile.get("allergies", []))
-    )
-    pregnancy = st.checkbox(
-        "Pregnant (if applicable)",
-        value=profile.get("pregnancy_status", False)
-    )
+with st.sidebar.form("edit_profile"):
+    age = st.number_input("Age", 0, 120, value=profile.get("age", 0))
+    gender = st.selectbox("Gender", ["Prefer not to say", "Male", "Female", "Other"],
+                          index=["Prefer not to say", "Male", "Female", "Other"].index(profile.get("gender", "Prefer not to say")))
+    conditions = st.text_input("Known medical conditions", ", ".join(profile.get("known_conditions", [])))
+    allergies = st.text_input("Allergies", ", ".join(profile.get("allergies", [])))
+    pregnancy = st.checkbox("Pregnant", value=profile.get("pregnancy_status", False))
+    save = st.form_submit_button("💾 Save Profile")
 
-    save_profile = st.form_submit_button("💾 Save Profile")
-
-if save_profile:
-    updated_profile = {
+if save:
+    updated = {
         "email": profile.get("email"),
         "age": age,
         "gender": gender,
@@ -164,13 +148,12 @@ if save_profile:
         "allergies": [a.strip().lower() for a in allergies.split(",") if a.strip()],
         "pregnancy_status": pregnancy
     }
-
-    db.collection("users").document(st.session_state.user_uid).set(updated_profile)
-    st.session_state.user_profile = updated_profile
-    st.sidebar.success("Profile updated successfully!")
+    db.collection("users").document(st.session_state.user_uid).set(updated)
+    st.session_state.user_profile = updated
+    st.sidebar.success("Profile updated!")
 
 # =============================
-# Load Resources (v1)
+# Load FAISS + Embeddings
 # =============================
 BASE_DIR = "."
 FAISS_PATH = os.path.join(BASE_DIR, "embeddings/faiss_index/medcheck.index")
@@ -185,94 +168,124 @@ def load_resources():
 
 index, metadata, embedder = load_resources()
 
-# =============================
-# Retriever Agent
-# =============================
-def retrieve_medical_evidence(query, top_k=3):
-    q_emb = embedder.encode([query])
-    distances, indices = index.search(q_emb, top_k)
-    return [{
-        "text": metadata.iloc[idx]["text"],
-        "distance": float(distances[0][i])
-    } for i, idx in enumerate(indices[0])]
+def retrieve_medical_evidence(query, top_k=2):
+    emb = embedder.encode([query])
+    d, i = index.search(emb, top_k)
+    return [{"text": metadata.iloc[idx]["text"]} for idx in i[0]]
 
 # =============================
-# Verification Agent
+# Load LLM (FLAN-T5)
 # =============================
-def verify_medical_claim(claim, evidence):
-    combined = " ".join(e["text"].lower() for e in evidence)
-    if "long-term" in combined or "excessive" in combined:
-        return {"verdict": "Unsafe", "explanation": "Long-term or excessive use may cause health risks."}
-    return {"verdict": "Partially Accurate", "explanation": "The claim is not fully supported by evidence."}
+@st.cache_resource
+def load_llm():
+    tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
+    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
+    return tokenizer, model
+
+llm_tokenizer, llm_model = load_llm()
 
 # =============================
-# Personalization Agent (v2)
+# Reasoning Helpers
 # =============================
-def personalize_risk(profile, evidence):
-    warnings = []
-    evidence_text = " ".join(e["text"].lower() for e in evidence)
+def classify_duration(claim):
+    c = claim.lower()
+    if any(x in c for x in ["2 days", "3 days", "few days", "short term", "once"]):
+        return "short"
+    if any(x in c for x in ["months", "weeks", "long term", "every day", "daily"]):
+        return "long"
+    return "unknown"
 
-    for c in profile.get("known_conditions", []):
-        if "kidney" in c and "kidney" in evidence_text:
-            warnings.append("Your kidney condition may increase risk.")
-        if "liver" in c and "liver" in evidence_text:
-            warnings.append("Your liver condition may increase risk.")
-    return warnings
+def build_analysis_prompt(claim, evidence):
+    ev = "\n".join([e["text"] for e in evidence])
+    return f"""
+Answer strictly YES or NO.
+
+Claim:
+{claim}
+
+Evidence:
+{ev}
+
+NormalUse:
+ClearlyExcessiveUse:
+WarnsNormalUse:
+WarnsExcessiveUse:
+"""
+
+def analyze_claim_with_llm(claim, evidence):
+    prompt = build_analysis_prompt(claim, evidence)
+    inputs = llm_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    out = llm_model.generate(**inputs, max_new_tokens=60)
+    resp = llm_tokenizer.decode(out[0], skip_special_tokens=True).upper()
+
+    return {
+        "normal_use": "NORMALUSE: YES" in resp,
+        "clearly_excessive": "CLEARLYEXCESSIVEUSE: YES" in resp,
+        "warns_normal": "WARNSNORMALUSE: YES" in resp,
+        "warns_excessive": "WARNSEXCESSIVEUSE: YES" in resp
+    }
+
+def decide_verdict_v4(analysis):
+    if analysis["warns_normal"]:
+        return "Unsafe"
+    if analysis["clearly_excessive"] and analysis["warns_excessive"]:
+        return "Unsafe"
+    if analysis["warns_excessive"]:
+        return "Safe with Caution"
+    return "Safe"
+
+def generate_explanation(claim, evidence, verdict):
+    ev = "\n".join([f"- {e['text']}" for e in evidence])
+    prompt = f"""
+Explain why the verdict is {verdict} using only the evidence.
+
+Claim:
+{claim}
+
+Evidence:
+{ev}
+
+Explanation:
+"""
+    inp = llm_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    out = llm_model.generate(**inp, max_new_tokens=120)
+    return llm_tokenizer.decode(out[0], skip_special_tokens=True)
+
+def verify_medical_claim_llm(claim, evidence):
+    duration = classify_duration(claim)
+    analysis = analyze_claim_with_llm(claim, evidence)
+
+    if duration == "short":
+        analysis["clearly_excessive"] = False
+        analysis["warns_normal"] = False
+
+    verdict = decide_verdict_v4(analysis)
+    explanation = generate_explanation(claim, evidence, verdict)
+
+    return verdict, explanation
 
 # =============================
-# Confidence
-# =============================
-def compute_confidence(verdict, k):
-    base = {"Accurate": 0.8, "Partially Accurate": 0.65, "Unsafe": 0.85}
-    return round(min(base.get(verdict, 0.6) + 0.01 * k, 0.95), 2)
-
-# =============================
-# Claim UI
+# UI – Claim Verification
 # =============================
 st.markdown("## 🧠 Verify Medical Claim")
-
 claim = st.text_area("Enter a medical claim or advice", height=120)
 
 if st.button("Verify Claim"):
-    if not claim.strip():
-        st.warning("Please enter a claim.")
-    else:
-        evidence = retrieve_medical_evidence(claim, top_k=2)
-        verification = verify_medical_claim_llm(claim, evidence)
-        confidence = compute_confidence(verification["verdict"], len(evidence))
+    evidence = retrieve_medical_evidence(claim)
+    verdict, explanation = verify_medical_claim_llm(claim, evidence)
 
-        st.markdown("## 🧾 Verdict")
-        if verification["verdict"] == "Unsafe":
-            st.error(verification["verdict"])
-        else:
-            st.success(verification["verdict"])
+    st.markdown("## 🧾 Verdict")
+    st.error(verdict) if verdict == "Unsafe" else st.success(verdict)
 
-        st.markdown("## 🔍 Explanation")
-        st.write(verification["explanation"])
+    st.markdown("## 🔍 Explanation")
+    st.write(explanation)
 
-        st.markdown(f"## 📊 Confidence Score: `{confidence}`")
-
-        warnings = personalize_risk(st.session_state.user_profile, evidence)
-
-        st.markdown("## ⚠️ Personalized Safety Assessment")
-        
-        if warnings:
-            for w in warnings:
-                st.warning(w)
-        else:
-            st.info(
-                "Based on your profile, no specific additional risks were identified "
-                "beyond the general medical evidence."
-            )
-
-        st.markdown("## 📚 Supporting Medical Evidence")
-        for e in evidence:
-            st.markdown(f"- {e['text']}")
+    st.markdown("## 📚 Supporting Medical Evidence")
+    for e in evidence:
+        st.markdown(f"- {e['text']}")
 
 # =============================
 # Footer
 # =============================
 st.markdown("---")
-st.caption("⚠️ MedCheck v3.1 • Informational use only. Consult a medical professional.")
-
-
+st.caption("⚠️ MedCheck v4.1 • Informational use only. Consult a medical professional.")
