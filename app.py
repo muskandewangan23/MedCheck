@@ -238,7 +238,7 @@ if st.button("Verify Claim"):
         st.warning("Please enter a claim.")
     else:
         evidence = retrieve_medical_evidence(claim, top_k=2)
-        verification = verify_medical_claim(claim, evidence)
+        verification = verify_medical_claim_llm(claim, evidence)
         confidence = compute_confidence(verification["verdict"], len(evidence))
 
         st.markdown("## 🧾 Verdict")
@@ -274,4 +274,5 @@ if st.button("Verify Claim"):
 # =============================
 st.markdown("---")
 st.caption("⚠️ MedCheck v3.1 • Informational use only. Consult a medical professional.")
+
 
