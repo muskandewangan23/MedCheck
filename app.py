@@ -20,7 +20,6 @@ def init_firebase():
     return firestore.client()
 
 db = init_firebase()
-
 FIREBASE_API_KEY = st.secrets["FIREBASE_WEB_API_KEY"]
 
 # =============================
@@ -93,8 +92,8 @@ if st.button(auth_mode):
                     "email": email,
                     "age": age,
                     "gender": gender,
-                    "known_conditions": [c.strip().lower() for c in conditions.split(",") if c],
-                    "allergies": [a.strip().lower() for a in allergies.split(",") if a],
+                    "known_conditions": [c.strip().lower() for c in conditions.split(",") if c.strip()],
+                    "allergies": [a.strip().lower() for a in allergies.split(",") if a.strip()],
                     "pregnancy_status": pregnancy
                 }
                 db.collection("users").document(uid).set(profile)
@@ -125,6 +124,50 @@ if st.button(auth_mode):
 if not st.session_state.logged_in:
     st.info("Please login or register to use MedCheck.")
     st.stop()
+
+# =============================
+# EDIT PROFILE (v3.1)
+# =============================
+st.sidebar.markdown("## 👤 Profile Settings")
+profile = st.session_state.user_profile
+
+with st.sidebar.form("edit_profile_form"):
+    age = st.number_input("Age", 0, 120, value=profile.get("age") or 0)
+    gender = st.selectbox(
+        "Gender",
+        ["Prefer not to say", "Male", "Female", "Other"],
+        index=["Prefer not to say", "Male", "Female", "Other"].index(
+            profile.get("gender", "Prefer not to say")
+        )
+    )
+    conditions = st.text_input(
+        "Known medical conditions (comma-separated)",
+        value=", ".join(profile.get("known_conditions", []))
+    )
+    allergies = st.text_input(
+        "Allergies (comma-separated)",
+        value=", ".join(profile.get("allergies", []))
+    )
+    pregnancy = st.checkbox(
+        "Pregnant (if applicable)",
+        value=profile.get("pregnancy_status", False)
+    )
+
+    save_profile = st.form_submit_button("💾 Save Profile")
+
+if save_profile:
+    updated_profile = {
+        "email": profile.get("email"),
+        "age": age,
+        "gender": gender,
+        "known_conditions": [c.strip().lower() for c in conditions.split(",") if c.strip()],
+        "allergies": [a.strip().lower() for a in allergies.split(",") if a.strip()],
+        "pregnancy_status": pregnancy
+    }
+
+    db.collection("users").document(st.session_state.user_uid).set(updated_profile)
+    st.session_state.user_profile = updated_profile
+    st.sidebar.success("Profile updated successfully!")
 
 # =============================
 # Load Resources (v1)
@@ -223,4 +266,4 @@ if st.button("Verify Claim"):
 # Footer
 # =============================
 st.markdown("---")
-st.caption("⚠️ MedCheck v3 • Informational use only. Consult a medical professional.")
+st.caption("⚠️ MedCheck v3.1 • Informational use only. Consult a medical professional.")
