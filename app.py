@@ -183,7 +183,11 @@ if st.button("Verify Claim"):
         confidence = compute_confidence(verification["verdict"], len(evidence))
 
         st.markdown("## 🧾 Verdict")
-        st.error(verification["verdict"]) if verification["verdict"] == "Unsafe" else st.success(verification["verdict"])
+        if verification["verdict"] == "Unsafe":
+            st.error(verification["verdict"])
+        else:
+            st.success(verification["verdict"])
+
 
         st.markdown("## 🔍 Explanation")
         st.write(verification["explanation"])
@@ -205,3 +209,4 @@ if st.button("Verify Claim"):
 # =============================
 st.markdown("---")
 st.caption("⚠️ MedCheck v3 • Informational use only. Consult a medical professional.")
+
