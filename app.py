@@ -10,13 +10,12 @@ from firebase_admin import credentials, firestore
 @st.cache_resource
 def init_firebase():
     if not firebase_admin._apps:
-        cred = credentials.Certificate(st.secrets["firebase"])
+        firebase_secrets = dict(st.secrets["firebase"])
+        cred = credentials.Certificate(firebase_secrets)
         firebase_admin.initialize_app(cred)
     return firestore.client()
 
 db = init_firebase()
-
-
 
 # =============================
 # App Configuration
@@ -232,6 +231,7 @@ st.caption(
     "⚠️ MedCheck v2 provides informational guidance only and does not replace professional medical advice. "
     "Always consult a qualified healthcare provider."
 )
+
 
 
 
