@@ -212,6 +212,16 @@ if st.button("Verify Claim"):
         for item in evidence:
             st.markdown(f"- {item['text']}")
 
+@st.cache_resource
+def init_firebase():
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(st.secrets["firebase"])
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
+
+db = init_firebase()
+
+
 # =============================
 # Footer
 # =============================
@@ -220,4 +230,5 @@ st.caption(
     "⚠️ MedCheck v2 provides informational guidance only and does not replace professional medical advice. "
     "Always consult a qualified healthcare provider."
 )
+
 
