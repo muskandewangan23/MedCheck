@@ -4,6 +4,9 @@ import numpy as np
 import pandas as pd
 import faiss
 from sentence_transformers import SentenceTransformer
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 
 # =============================
 # App Configuration
@@ -217,3 +220,4 @@ st.caption(
     "⚠️ MedCheck v2 provides informational guidance only and does not replace professional medical advice. "
     "Always consult a qualified healthcare provider."
 )
+
