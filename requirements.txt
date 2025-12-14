@@ -4,3 +4,6 @@ sentence-transformers
 torch
 numpy
 pandas
+firebase-admin
+
+
