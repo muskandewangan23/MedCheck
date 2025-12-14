@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 import faiss
+import requests
 from sentence_transformers import SentenceTransformer
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -19,6 +20,21 @@ def init_firebase():
     return firestore.client()
 
 db = init_firebase()
+
+FIREBASE_API_KEY = st.secrets["FIREBASE_WEB_API_KEY"]
+
+# =============================
+# Firebase Auth (REST)
+# =============================
+def firebase_register(email, password):
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
+    payload = {"email": email, "password": password, "returnSecureToken": True}
+    return requests.post(url, json=payload).json()
+
+def firebase_login(email, password):
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+    payload = {"email": email, "password": password, "returnSecureToken": True}
+    return requests.post(url, json=payload).json()
 
 # =============================
 # App Configuration
@@ -43,11 +59,11 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_profile" not in st.session_state:
     st.session_state.user_profile = None
-if "user_email" not in st.session_state:
-    st.session_state.user_email = None
+if "user_uid" not in st.session_state:
+    st.session_state.user_uid = None
 
 # =============================
-# AUTH UI (v3 Step 5)
+# AUTH UI
 # =============================
 st.markdown("## 🔐 Account")
 
@@ -69,26 +85,39 @@ if st.button(auth_mode):
         st.error("Email and password are required.")
     else:
         if auth_mode == "Register":
-            profile = {
-                "email": email,
-                "age": age,
-                "gender": gender,
-                "known_conditions": [c.strip().lower() for c in conditions.split(",") if c],
-                "allergies": [a.strip().lower() for a in allergies.split(",") if a],
-                "pregnancy_status": pregnancy
-            }
-            db.collection("users").document(email).set(profile)
-            st.success("Registration successful! You can now login.")
+            auth_res = firebase_register(email, password)
+
+            if "localId" in auth_res:
+                uid = auth_res["localId"]
+                profile = {
+                    "email": email,
+                    "age": age,
+                    "gender": gender,
+                    "known_conditions": [c.strip().lower() for c in conditions.split(",") if c],
+                    "allergies": [a.strip().lower() for a in allergies.split(",") if a],
+                    "pregnancy_status": pregnancy
+                }
+                db.collection("users").document(uid).set(profile)
+                st.success("Registration successful! Please login.")
+            else:
+                st.error(auth_res.get("error", {}).get("message", "Registration failed"))
 
         else:  # Login
-            doc = db.collection("users").document(email).get()
-            if doc.exists:
-                st.session_state.logged_in = True
-                st.session_state.user_profile = doc.to_dict()
-                st.session_state.user_email = email
-                st.success("Logged in successfully!")
+            auth_res = firebase_login(email, password)
+
+            if "localId" in auth_res:
+                uid = auth_res["localId"]
+                doc = db.collection("users").document(uid).get()
+
+                if doc.exists:
+                    st.session_state.logged_in = True
+                    st.session_state.user_profile = doc.to_dict()
+                    st.session_state.user_uid = uid
+                    st.success("Logged in successfully!")
+                else:
+                    st.error("User profile not found.")
             else:
-                st.error("User not found. Please register first.")
+                st.error(auth_res.get("error", {}).get("message", "Login failed"))
 
 # =============================
 # STOP if not logged in
@@ -117,11 +146,9 @@ index, metadata, embedder = load_resources()
 # Retriever Agent
 # =============================
 def retrieve_medical_evidence(query, top_k=3):
-    query_embedding = embedder.encode([query])
-    distances, indices = index.search(query_embedding, top_k)
-
+    q_emb = embedder.encode([query])
+    distances, indices = index.search(q_emb, top_k)
     return [{
-        "rank": i + 1,
         "text": metadata.iloc[idx]["text"],
         "distance": float(distances[0][i])
     } for i, idx in enumerate(indices[0])]
@@ -132,14 +159,8 @@ def retrieve_medical_evidence(query, top_k=3):
 def verify_medical_claim(claim, evidence):
     combined = " ".join(e["text"].lower() for e in evidence)
     if "long-term" in combined or "excessive" in combined:
-        return {
-            "verdict": "Unsafe",
-            "explanation": "Long-term or excessive use is associated with serious health risks."
-        }
-    return {
-        "verdict": "Partially Accurate",
-        "explanation": "The claim is not fully supported by the evidence."
-    }
+        return {"verdict": "Unsafe", "explanation": "Long-term or excessive use may cause health risks."}
+    return {"verdict": "Partially Accurate", "explanation": "The claim is not fully supported by evidence."}
 
 # =============================
 # Personalization Agent (v2)
@@ -153,7 +174,6 @@ def personalize_risk(profile, evidence):
             warnings.append("Your kidney condition may increase risk.")
         if "liver" in c and "liver" in evidence_text:
             warnings.append("Your liver condition may increase risk.")
-
     return warnings
 
 # =============================
@@ -168,11 +188,7 @@ def compute_confidence(verdict, k):
 # =============================
 st.markdown("## 🧠 Verify Medical Claim")
 
-claim = st.text_area(
-    "Enter a medical claim or advice",
-    height=120,
-    placeholder="Example: It is safe to take ibuprofen every day for a long time."
-)
+claim = st.text_area("Enter a medical claim or advice", height=120)
 
 if st.button("Verify Claim"):
     if not claim.strip():
@@ -187,7 +203,6 @@ if st.button("Verify Claim"):
             st.error(verification["verdict"])
         else:
             st.success(verification["verdict"])
-
 
         st.markdown("## 🔍 Explanation")
         st.write(verification["explanation"])
@@ -209,4 +224,3 @@ if st.button("Verify Claim"):
 # =============================
 st.markdown("---")
 st.caption("⚠️ MedCheck v3 • Informational use only. Consult a medical professional.")
-
