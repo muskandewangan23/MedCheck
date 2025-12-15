@@ -22,7 +22,7 @@ db = init_firebase()
 FIREBASE_API_KEY = st.secrets["FIREBASE_WEB_API_KEY"]
 
 # =========================================================
-# Firebase Auth (REST)
+# Firebase Auth
 # =========================================================
 def firebase_register(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
@@ -44,7 +44,6 @@ def firebase_login(email, password):
 # App UI
 # =========================================================
 st.set_page_config(page_title="MedCheck", layout="centered")
-
 st.title("🩺 MedCheck")
 st.subheader("Medical Claim Verification System")
 
@@ -58,9 +57,9 @@ MedCheck verifies medical advice using
 # =========================================================
 # Session State
 # =========================================================
-for k in ["logged_in", "user_profile", "user_uid"]:
-    if k not in st.session_state:
-        st.session_state[k] = None
+for key in ["logged_in", "user_profile", "user_uid"]:
+    if key not in st.session_state:
+        st.session_state[key] = None if key != "logged_in" else False
 
 # =========================================================
 # AUTH
@@ -74,8 +73,7 @@ password = st.text_input("Password", type="password")
 if mode == "Register":
     age = st.number_input("Age", 0, 120)
     gender = st.selectbox("Gender", ["Prefer not to say", "Male", "Female", "Other"])
-    conditions = st.text_input("Known medical conditions (comma-separated)")
-    allergies = st.text_input("Allergies (comma-separated)")
+    conditions = st.text_input("Known medical conditions")
     pregnancy = st.checkbox("Pregnant (if applicable)")
 
 if st.button(mode):
@@ -86,23 +84,19 @@ if st.button(mode):
                 "email": email,
                 "age": age,
                 "gender": gender,
-                "known_conditions": [c.strip().lower() for c in conditions.split(",") if c],
-                "allergies": [a.strip().lower() for a in allergies.split(",") if a],
+                "known_conditions": [c.strip().lower() for c in conditions.split(",") if c.strip()],
                 "pregnancy_status": pregnancy
             })
-            st.success("Registered successfully. Please login.")
-        else:
-            st.error(res)
+            st.success("Registered. Please login.")
     else:
         res = firebase_login(email, password)
         if "localId" in res:
             doc = db.collection("users").document(res["localId"]).get()
-            st.session_state.logged_in = True
-            st.session_state.user_uid = res["localId"]
-            st.session_state.user_profile = doc.to_dict()
-            st.success("Logged in successfully.")
-        else:
-            st.error(res)
+            if doc.exists:
+                st.session_state.logged_in = True
+                st.session_state.user_uid = res["localId"]
+                st.session_state.user_profile = doc.to_dict()
+                st.success("Logged in")
 
 if not st.session_state.logged_in:
     st.stop()
@@ -113,21 +107,18 @@ if not st.session_state.logged_in:
 st.sidebar.markdown("## 👤 Profile Settings")
 p = st.session_state.user_profile
 
-with st.sidebar.form("edit_profile"):
+with st.sidebar.form("profile"):
     age = st.number_input("Age", 0, 120, value=p.get("age", 0))
     gender = st.selectbox("Gender", ["Prefer not to say", "Male", "Female", "Other"],
-                          index=["Prefer not to say", "Male", "Female", "Other"].index(p.get("gender")))
+                          index=["Prefer not to say", "Male", "Female", "Other"].index(p.get("gender", "Prefer not to say")))
     conditions = st.text_input("Known medical conditions", ", ".join(p.get("known_conditions", [])))
-    allergies = st.text_input("Allergies", ", ".join(p.get("allergies", [])))
     pregnancy = st.checkbox("Pregnant", value=p.get("pregnancy_status", False))
-
     if st.form_submit_button("Save"):
         updated = {
             "email": p["email"],
             "age": age,
             "gender": gender,
-            "known_conditions": [c.strip().lower() for c in conditions.split(",") if c],
-            "allergies": [a.strip().lower() for a in allergies.split(",") if a],
+            "known_conditions": [c.strip().lower() for c in conditions.split(",") if c.strip()],
             "pregnancy_status": pregnancy
         }
         db.collection("users").document(st.session_state.user_uid).set(updated)
@@ -135,63 +126,65 @@ with st.sidebar.form("edit_profile"):
         st.sidebar.success("Profile updated")
 
 # =========================================================
-# Load FAISS + Models
+# Load FAISS
 # =========================================================
 @st.cache_resource
-def load_resources():
+def load_retriever():
     index = faiss.read_index("embeddings/faiss_index/medcheck.index")
     meta = pd.read_csv("embeddings/chunk_metadata.csv")
     embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
-    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
-    return index, meta, embedder, tokenizer, model
+    return index, meta, embedder
 
-index, meta, embedder, llm_tokenizer, llm_model = load_resources()
+index, metadata, embedder = load_retriever()
 
-def retrieve_evidence(q, k=5):
-    emb = embedder.encode([q])
-    _, idx = index.search(emb, k)
-    return [{"text": meta.iloc[i]["text"]} for i in idx[0]]
+def retrieve_evidence(query, k=5):
+    q_emb = embedder.encode([query])
+    _, idxs = index.search(q_emb, k)
 
-def filter_entity(q, evidence):
-    terms = q.lower().split()
-    out = [e for e in evidence if any(t in e["text"].lower() for t in terms)]
-    return out if out else evidence
+    q_terms = set(query.lower().split())
+    filtered = []
+
+    for i in idxs[0]:
+        text = metadata.iloc[i]["text"]
+        if any(t in text.lower() for t in q_terms):
+            filtered.append({"text": text})
+
+    return filtered[:2] if filtered else [{"text": metadata.iloc[idxs[0][0]]["text"]}]
 
 # =========================================================
-# 🔒 LOCKED v4 LOGIC
+# LLM (Explanation Only)
 # =========================================================
-def is_non_medical(claim):
-    return any(x in claim.lower() for x in ["milk", "water", "lemon", "tea", "coffee"])
+@st.cache_resource
+def load_llm():
+    tok = AutoTokenizer.from_pretrained("google/flan-t5-base")
+    mdl = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
+    return tok, mdl
 
-def has_direct_contradiction(evidence):
-    t = " ".join(e["text"].lower() for e in evidence)
-    return "do not treat viral" in t or "does not treat viral" in t
+tok, mdl = load_llm()
 
 def classify_duration(claim):
     c = claim.lower()
-    if any(x in c for x in ["2 days", "few days", "once"]):
+    if any(x in c for x in ["1 day", "2 days", "few days", "once"]):
         return "short"
-    if any(x in c for x in ["months", "every day", "daily"]):
+    if any(x in c for x in ["months", "weeks", "daily", "every day"]):
         return "long"
     return "unknown"
 
 def decide_verdict(duration, evidence):
-    t = " ".join(e["text"].lower() for e in evidence)
+    text = " ".join(e["text"].lower() for e in evidence)
 
-    if "should not be used" in t or "contraindicated" in t:
+    if any(p in text for p in ["do not use", "not safe", "contraindicated"]):
         return "Unsafe"
 
-    if duration == "long" and any(x in t for x in ["long-term", "toxicity", "risk of"]):
+    if duration == "long" and any(p in text for p in ["long-term", "excessive", "toxicity", "risk"]):
         return "Unsafe"
 
     return "Safe"
 
 def generate_explanation(claim, evidence, verdict):
-    ev = "\n".join("- " + e["text"] for e in evidence)
+    ev = "\n".join(f"- {e['text']}" for e in evidence)
     prompt = f"""
-Use ONLY the evidence below.
-Do NOT add new facts.
+Explain why the verdict is "{verdict}" using ONLY the evidence.
 
 Claim:
 {claim}
@@ -199,43 +192,47 @@ Claim:
 Evidence:
 {ev}
 
-Explain why verdict is {verdict} in 2 sentences.
+Explanation:
 """
-    out = llm_model.generate(**llm_tokenizer(prompt, return_tensors="pt"), max_new_tokens=80)
-    return llm_tokenizer.decode(out[0], skip_special_tokens=True)
+    inputs = tok(prompt, return_tensors="pt", truncation=True)
+    out = mdl.generate(**inputs, max_new_tokens=80)
+    return tok.decode(out[0], skip_special_tokens=True)
 
 # =========================================================
-# UI – VERIFY
+# UI – CLAIM
 # =========================================================
 st.markdown("## 🧠 Verify Medical Claim")
 claim = st.text_area("Enter a medical claim")
 
 if st.button("Verify"):
-    evidence = filter_entity(claim, retrieve_evidence(claim))
-
-    if is_non_medical(claim):
-        verdict, explanation = "Safe", "No medical safety risks are indicated for normal consumption."
-    elif has_direct_contradiction(evidence):
-        verdict = "Unsafe"
-        explanation = generate_explanation(claim, evidence, verdict)
-    else:
-        verdict = decide_verdict(classify_duration(claim), evidence)
-        explanation = generate_explanation(claim, evidence, verdict)
+    evidence = retrieve_evidence(claim)
+    duration = classify_duration(claim)
+    verdict = decide_verdict(duration, evidence)
+    explanation = generate_explanation(claim, evidence, verdict)
 
     st.markdown("## 🧾 Verdict")
-    st.success(verdict) if verdict == "Safe" else st.error(verdict)
+    if verdict == "Safe":
+        st.success(verdict)
+    else:
+        st.error(verdict)
 
     st.markdown("## 🔍 Explanation")
     st.write(explanation)
 
-    # Personalized
+    # Personalization
     st.markdown("## ⚠️ Personalized Safety Assessment")
-    txt = " ".join(e["text"].lower() for e in evidence)
+    profile = st.session_state.user_profile
     warnings = []
+    ev_text = " ".join(e["text"].lower() for e in evidence)
 
-    for c in st.session_state.user_profile.get("known_conditions", []):
-        if c in txt:
-            warnings.append(f"Your condition ({c}) is mentioned in the evidence.")
+    for c in profile.get("known_conditions", []):
+        if "kidney" in c and "kidney" in ev_text:
+            warnings.append("Kidney-related condition may increase risk.")
+        if "liver" in c and "liver" in ev_text:
+            warnings.append("Liver-related condition may increase risk.")
+
+    if profile.get("pregnancy_status"):
+        warnings.append("Pregnancy may introduce additional risks.")
 
     if warnings:
         for w in warnings:
@@ -247,4 +244,5 @@ if st.button("Verify"):
     for e in evidence:
         st.markdown(f"- {e['text']}")
 
-st.caption("⚠️ MedCheck v4.3 • Informational use only.")
+st.markdown("---")
+st.caption("⚠️ MedCheck v4.3 • Informational use only")
